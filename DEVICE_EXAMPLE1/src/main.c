@@ -116,7 +116,7 @@ unsigned short gu16_parameterWord = PARAMETER_WORD;
 #define FACTORY_PARASET_PWD		1234
 #define FACTORY_PASSWORD		1000
 #define DFU_PASSWORD			3123
-#define SOFT_VER				910  //means 9.10
+#define SOFT_VER				920  //means 9.20
 #define NO_OF_ACKPWD			15
 #define NO_OF_XBEE_MAC			2
 #define NO_OF_DEVICES_IN_GROUP	5
@@ -160,7 +160,7 @@ unsigned short gu16_parameterWord = PARAMETER_WORD;
 	#define PASCAL_PER_CNT			270.0
 #endif
 
-#define RAW_DP_CNT_IND			5
+#define RAW_DP_CNT_IND			10
 #define XBEE_RX_IND_MAX			20
 #define RX_IND_MAX				100
 #define TX_IND_MAX				100
@@ -715,7 +715,10 @@ volatile static struct bits
 	uint8_t Sec_blink_flag : 1;	
 	uint8_t RTCChangeOccure : 1;
 	uint8_t sec_flag : 1;	
-	uint8_t msec_flag : 1;	
+	uint8_t msec500_flag : 1;	
+	uint8_t msec250_flag : 1;
+	uint8_t msec100_flag : 1;
+	uint8_t msec50_flag : 1;
 	uint8_t buzzerStart : 1;
 	uint8_t UARTChanged : 1;	
 	uint8_t keybit : 1;
@@ -761,6 +764,8 @@ volatile static struct bits
 	uint8_t buzzeralert : 1;
 	uint8_t autoSendResponse : 1;
 	uint8_t triggerXbeeReset : 1;
+	uint8_t DP1_limit : 2;
+	uint8_t DP2_limit : 2;
 	
 }b={0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
 
@@ -848,10 +853,10 @@ uint8_t seg_code[]=
 	0x78,  //code for t
 	0x50,  //code for r
 	0x73,  //code for P
-	0x10,  //code for I
+	0x30,  //code for I
 	0x71,  //code for F
 	0x3E,  //code for U
-	0x74,  //code for H
+	0x76,  //code for H
 	0x15,  //code for M
 	0x6E,  //code for small y
 	0x2A,  //code for V
@@ -930,12 +935,11 @@ union
 unsigned long testEpochTime1;
 
 uint8_t Raw_pressure_cnt_ind1=0;
-unsigned short Raw_pressure_cnt1[RAW_DP_CNT_IND];
-unsigned long Avg_Raw_pressure_cnt1=0;
+signed short Raw_pressure_cnt1[RAW_DP_CNT_IND];
 
 uint8_t Raw_pressure_cnt_ind2=0;
-unsigned short Raw_pressure_cnt2[RAW_DP_CNT_IND];
-unsigned long Avg_Raw_pressure_cnt2=0;
+signed short Raw_pressure_cnt2[RAW_DP_CNT_IND];
+float LastDpressure1=0.0,LastDpressure2=0.0;
 
 float Dpressure1=0.0,Dpressure2=0.0;
 
@@ -2156,28 +2160,54 @@ int main(void)
 			}
 		#endif
 		
-		if(b.msec_flag)
+		if(b.msec250_flag)
+		{
+			Read_SHT25();
+			
+			b.msec250_flag=0;
+		}
+		
+		if(b.msec50_flag)
+		{
+			//Read Differential Pressure -----------------------------------------
+			if(gu16_parameterWord & ENABLE_DP1)
 			{
-				if(gu16_parameterWord & ENABLE_DP2)
-				{
-					ReadDiffPressure2();
-				}
-				else
-				{
-					b.DP2_NC = 0;
-					
-					Dpressure2=0.0;
-
-					DP2_Max=0.0;
-					DP2_Min=0.0;
-
-					DP2_Alrm_ON=NO_ALARM;
-					
-					DP_StartUpTimer=0;
-				}
-				
-				b.msec_flag=0;
+				ReadDiffPressure1();
 			}
+			else
+			{
+				b.DP1_NC = 0;
+				
+				Dpressure1=0.0;
+
+				DP1_Max=0.0;
+				DP1_Min=0.0;
+
+				DP1_Alrm_ON=NO_ALARM;
+				
+				DP_StartUpTimer=0;
+			}
+			
+			if(gu16_parameterWord & ENABLE_DP2)
+			{
+				ReadDiffPressure2();
+			}
+			else
+			{
+				b.DP2_NC = 0;
+				
+				Dpressure2=0.0;
+
+				DP2_Max=0.0;
+				DP2_Min=0.0;
+
+				DP2_Alrm_ON=NO_ALARM;
+				
+				DP_StartUpTimer=0;
+			}
+			
+			b.msec50_flag=0;
+		}
 		//====================================================
 		if(gu16_parameterWord & ENABLE_LCD)
 		{		
@@ -7513,847 +7543,496 @@ void Init_Timer0(void)
 	//*/
 //}
 
-unsigned short lastdifferanceDP1=0,lastdifferanceDP2=0;
-uint8_t gu8_DP2StandbyTimer = 0;
-
 void ReadDiffPressure1(void)
 {	
 	unsigned short differanceDP=0;
-
-	Dpressure1=0.0;
+	uint8_t DpError=0;
 	
-	#ifdef USE_SM9541_SENSOR
-				
-		uint8_t DpError=0;
-		
-		//Start Command Mode ----------------------------------
-		I2C_Start();						// Start condition
-		Write_Byte_I2C(0x51); 				// Write device address
-		
-		SDA_DIR_IN;
-		
-		differanceDP=0;
-		differanceDP = Read_Byte_I2C(ACK);
-		differanceDP<<=8;
-		differanceDP |= Read_Byte_I2C(NO_ACK);
-		
-		SDA_DIR_OUT;
-		
-		I2C_Stop();              // Send a STOP condition on the TWI bus.
+	Dpressure1=0.0;
 
-		if((differanceDP & 0xC000) == 0xC000) DpError = 1;
+	//Start Command Mode ----------------------------------
+	I2C_Start();						// Start condition
+	Write_Byte_I2C(0x51); 				// Write device address
+	
+	SDA_DIR_IN;
+	
+	differanceDP=0;
+	differanceDP = Read_Byte_I2C(ACK);
+	differanceDP<<=8;
+	differanceDP |= Read_Byte_I2C(NO_ACK);
+	
+	SDA_DIR_OUT;
+	
+	I2C_Stop();              // Send a STOP condition on the TWI bus.
+
+	if((differanceDP & 0xC000) == 0xC000) DpError = 1;
+	
+	differanceDP &= 0x3FFF;
+			
+	if(DpError)
+	{
+		b.DP1_NC=1;
+		DP1_Alrm_ON=NO_ALARM;
 		
-		differanceDP &= 0x3FFF;
-				
-		if(DpError)
+		gu8_Dp1AlarmSensingTimer=0;
+		
+		#ifdef DEBUG_DP1
+		opstr(1,"DP1 ERROR  ");
+		#endif
+	}
+	else
+	{
+		b.DP1_NC=0;
+		
+		RealDpressure1 = (float)differanceDP-1638;	
+		RealDpressure1 *= 0.0762951094834821;//0.1496910048065919;
+		RealDpressure1 -= 500;//981;
+		
+		float f32_temp=0;
+		f32_temp = RealDpressure1;
+		f32_temp -= DP1_Cal_float_Value_F;
+		f32_temp -= DP1_Cal_float_Value_C;
+		
+		if((f32_temp > 200) && (f32_temp <= 300)) f32_temp -= 1;
+		else if((f32_temp > 300) && (f32_temp <= 400)) f32_temp -= 2;
+		else if((f32_temp > 400) && (f32_temp <= 500)) f32_temp -= 3;
+		else if((f32_temp > 500) && (f32_temp <= 600)) f32_temp -= 4;
+		else if((f32_temp > 600) && (f32_temp <= 700)) f32_temp -= 5;
+		else if((f32_temp > 700) && (f32_temp <= 800)) f32_temp -= 6;
+		else if(f32_temp > 800) f32_temp -= 7;
+		
+		Dpressure1 = f32_temp;
+		
+		Dpressure1 = Kalman_Update(&Kalman[0], Dpressure1);
+		
+		//if(!DP_CHANGE_SENSE) //ENABLE for switch
 		{
-			b.DP1_NC=1;
-			DP1_Alrm_ON=NO_ALARM;
-			
-			gu8_Dp1AlarmSensingTimer=0;
-			
-			//DP_StartUpTimer=S_STABLE_TIME;
-			Avg_Raw_pressure_cnt1=0x3FFF;
-			
-			#ifdef DEBUG_DP1
-			opstr(1,"DP1 ERROR  ");
-			#endif
+			if(!gu8_dp_sw_enb)
+			{
+				if(Dpressure1>-1.0) Dpressure1 += f32_dp_sw_factor[0]; //MINUS LIMIT
+				else Dpressure1 -= f32_dp_sw_factor[0];
+			}
+			else
+			{
+				if((Dpressure1>0.03) || (Dpressure1<-0.03))
+				{
+					if(Dpressure1>0.03) Dpressure1 += f32_dp_sw_factor[0];
+					if(Dpressure1<-0.03) Dpressure1 -= f32_dp_sw_factor[0];
+				}
+			}
+		}
+		
+		//---------------------------------------------------------------------------
+		/*Raw_pressure_cnt1[Raw_pressure_cnt_ind1++] = (Dpressure1 * 10);
+		if(Raw_pressure_cnt_ind1>=RAW_DP_CNT_IND) Raw_pressure_cnt_ind1=0;
+		
+		signed long lu32_temp=0;
+		
+		lu32_temp = 0;
+		for(i=0;i<RAW_DP_CNT_IND;i++) lu32_temp += Raw_pressure_cnt1[i];
+		lu32_temp /= RAW_DP_CNT_IND;       
+		
+		Dpressure1 = (float)lu32_temp/10;
+		*/
+		
+		if((Dpressure1<1.0) && (Dpressure1>-1.0))
+		{
+			Dpressure1 = 0;
+		}
+		
+		if(Dpressure1 > f32_dp_limit[0]) 
+		{
+			Dpressure1 = f32_dp_limit[0];
+			b.DP1_limit = 1;
+		}
+		else if(Dpressure1 < -f32_dp_limit[0]) 
+		{
+			Dpressure1 = -f32_dp_limit[0];
+			b.DP1_limit = 2;
 		}
 		else
 		{
-			b.DP1_NC=0;
-			
-			Raw_pressure_cnt1[Raw_pressure_cnt_ind1++] = differanceDP;
-			if(Raw_pressure_cnt_ind1>=RAW_DP_CNT_IND) Raw_pressure_cnt_ind1=0;
-			
-			signed long lu32_temp=0;
-			
-			lu32_temp = 0;
-			for(i=0;i<RAW_DP_CNT_IND;i++) lu32_temp += Raw_pressure_cnt1[i];
-			lu32_temp /= RAW_DP_CNT_IND;
-
-			if((Avg_Raw_pressure_cnt1<=(lu32_temp+5)) && (Avg_Raw_pressure_cnt1>=(lu32_temp-5)))
+			b.DP1_limit = 0;
+		}
+		
+		if(abs(LastDpressure1-Dpressure1)>0.1)
+		{
+			LastDpressure1 = Dpressure1;
+		}
+		else
+		{
+			Dpressure1 = LastDpressure1;
+		}
+		
+		if(!DP_StartUpTimer)
+		{
+			//Find DP1 Min/Max
+			if(Dpressure1 > DP1_Max)
 			{
-				Avg_Raw_pressure_cnt1=(lu32_temp+Avg_Raw_pressure_cnt1+Avg_Raw_pressure_cnt1)/3;
+				DP1_Max = Dpressure1;
+				eeprom_busy_wait();  eeprom_write_block((uint8_t*)&DP1_Max,(uint8_t*)DP1_MAXIMUM,4);
 			}
-			else
+						
+			if(Dpressure1 < DP1_Min)
 			{
-				Avg_Raw_pressure_cnt1=lu32_temp;
+				DP1_Min = Dpressure1;
+				eeprom_busy_wait();  eeprom_write_block((uint8_t*)&DP1_Min,(uint8_t*)DP1_MINIMUM,4);
 			}
-			
-			Avg_Raw_pressure_cnt1 -= 1638;
-
-			RealDpressure1 = (float)Avg_Raw_pressure_cnt1;
-			
-			if(gu16_parameterWord & DIFP1_ABSP1)
+					
+			//Check Alarm Limit for DP ------------------------------------------------------------------------
+			if(Dpressure1 > (float)DP1_Upper_Alm_ON/10.0)
 			{
-				RealDpressure1 *= 0.0762951094834821;//0.1496910048065919;
-				RealDpressure1 -= 500;//981;
-			}
-			else
-			{
-				RealDpressure1 *= 0.0762951094834821;//0.1496910048065919;
-				RealDpressure1 -= 500;//981;
-			}
-			
-			float f32_temp=0;
-			f32_temp = RealDpressure1;
-			f32_temp -= DP1_Cal_float_Value_F;
-			f32_temp -= DP1_Cal_float_Value_C;
-			lu32_temp = f32_temp;
-			f32_temp = lu32_temp;
-			
-			if((f32_temp > 200) && (f32_temp <= 300)) f32_temp -= 1;
-			else if((f32_temp > 300) && (f32_temp <= 400)) f32_temp -= 2;
-			else if((f32_temp > 400) && (f32_temp <= 500)) f32_temp -= 3;
-			else if((f32_temp > 500) && (f32_temp <= 600)) f32_temp -= 4;
-			else if((f32_temp > 600) && (f32_temp <= 700)) f32_temp -= 5;
-			else if((f32_temp > 700) && (f32_temp <= 800)) f32_temp -= 6;
-			else if(f32_temp > 800) f32_temp -= 7;
-			
-			if((f32_temp<1.0) && (f32_temp>-1.0))
-			{
-				f32_temp = 0;
-			}
-			
-			Dpressure1 = f32_temp;
-			
-			Dpressure1 = Kalman_Update(&Kalman[0], Dpressure1);
-			
-			//if(!DP_CHANGE_SENSE) //ENABLE for switch
-			{
-				if(!gu8_dp_sw_enb)
+				if(gu8_Dp1AlarmSensingTimer<=gu8_Dp2AlarmSensingTime)
 				{
-					if(Dpressure1>-1.0) Dpressure1 += f32_dp_sw_factor[0]; //MINUS LIMIT
-					else Dpressure1 -= f32_dp_sw_factor[0];
+					gu8_Dp1AlarmSensingTimer++;
 				}
 				else
 				{
-					if((Dpressure1>0.03) || (Dpressure1<-0.03))
+					DP1_Alrm_ON=UPPER_ALARM;
+				
+					if(!b.DP1Log)
 					{
-						if(Dpressure1>0.03) Dpressure1 += f32_dp_sw_factor[0];
-						if(Dpressure1<-0.03) Dpressure1 -= f32_dp_sw_factor[0];
-					}
-				}
-			}
-			
-			if(Dpressure1 > f32_dp_limit[0]) Dpressure1 = f32_dp_limit[0];
-			if(Dpressure1 < -f32_dp_limit[0]) Dpressure1 = -f32_dp_limit[0];
-			
-			if(!DP_StartUpTimer)
-			{
-				//Find DP1 Min/Max
-				if(Dpressure1 > DP1_Max)
-				{
-					DP1_Max = Dpressure1;
-					eeprom_busy_wait();  eeprom_write_block((uint8_t*)&DP1_Max,(uint8_t*)DP1_MAXIMUM,4);
-				}
-							
-				if(Dpressure1 < DP1_Min)
-				{
-					DP1_Min = Dpressure1;
-					eeprom_busy_wait();  eeprom_write_block((uint8_t*)&DP1_Min,(uint8_t*)DP1_MINIMUM,4);
-				}
-						
-				//Check Alarm Limit for DP ------------------------------------------------------------------------
-				if(Dpressure1 > (float)DP1_Upper_Alm_ON/10.0)
-				{
-					if(gu8_Dp1AlarmSensingTimer<=gu8_Dp2AlarmSensingTime)
-					{
-						gu8_Dp1AlarmSensingTimer++;
-					}
-					else
-					{
-						DP1_Alrm_ON=UPPER_ALARM;
-					
-						if(!b.DP1Log)
-						{
-							LastDP1_Alrm_ON=DP1_Alrm_ON;
-							eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP1_ALRM_STAT,LastDP1_Alrm_ON);
-						
-							LogReading(DP1_ALM_OCCURE_LOG,0,0xFFFF);
-							FillRamBuffer(DP1_ALM_OCCURE_LOG,0,0xFFFF);
-						
-							//if(gu16_parameterWord & ENABLE_ALERT) StartBuzzer();
-						
-							b.autoSendResponse = true;
-							b.DP1Log=1;
-						}
-						else
-						{
-							if(LastDP1_Alrm_ON!=DP1_Alrm_ON)
-							{
-								LogReading(DP1_ALM_RESTORE_LOG,0,0xFFFF);
-								FillRamBuffer(DP1_ALM_RESTORE_LOG,0,0xFFFF);
-							
-								LastDP1_Alrm_ON=NO_ALARM;
-								eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP1_ALRM_STAT,LastDP1_Alrm_ON);
-							
-								b.DP1Log=0;
-							}
-						}
-					}
-				}
-				else if(Dpressure1 < (float)DP1_Lower_Alm_ON/10.0)
-				{
-					if(gu8_Dp1AlarmSensingTimer<=gu8_Dp2AlarmSensingTime)
-					{
-						gu8_Dp1AlarmSensingTimer++;
-					}
-					else
-					{
-						DP1_Alrm_ON=LOWER_ALARM;
-						
-						if(!b.DP1Log)
-						{
-							LastDP1_Alrm_ON=DP1_Alrm_ON;
-							eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP1_ALRM_STAT,LastDP1_Alrm_ON);
-							
-							LogReading(DP1_ALM_OCCURE_LOG,0,0xFFFF);
-							FillRamBuffer(DP1_ALM_OCCURE_LOG,0,0xFFFF);
-							
-							//if(gu16_parameterWord & ENABLE_ALERT) StartBuzzer();
-							
-							b.autoSendResponse = true;
-							b.DP1Log=1;
-						}
-						else
-						{
-							if(LastDP1_Alrm_ON!=DP1_Alrm_ON)
-							{
-								LogReading(DP1_ALM_RESTORE_LOG,0,0xFFFF);
-								FillRamBuffer(DP1_ALM_RESTORE_LOG,0,0xFFFF);
-								
-								LastDP1_Alrm_ON=NO_ALARM;
-								eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP1_ALRM_STAT,LastDP1_Alrm_ON);
-								
-								b.DP1Log=0;
-							}
-						}
-					}
-				}
-				else if((Dpressure1 < (float)DP1_Upper_Alm_OFF/10.0) && (Dpressure1 > (float)DP1_Lower_Alm_OFF/10.0))
-				{
-					DP1_Alrm_ON=NO_ALARM;
-					
-					gu8_Dp1AlarmSensingTimer=0;
-					
-					if(b.DP1Log==1)
-					{
-						LogReading(DP1_ALM_RESTORE_LOG,0,0xFFFF);
-						FillRamBuffer(DP1_ALM_RESTORE_LOG,0,0xFFFF);
-						
-						b.DP1Log=0;
-						
 						LastDP1_Alrm_ON=DP1_Alrm_ON;
 						eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP1_ALRM_STAT,LastDP1_Alrm_ON);
-					}
-				}
-			}
-		}
-			
-		#ifdef DEBUG_DP1				
-		opstr(1," SM9541 Reading:  ");
-		opstr(1,"DP1 Count: ");
-		print_float(1,differanceDP,test,0);
-		opstr(1,"    ");
-		opstr(1,"DP1 Value: ");
-		print_float(1,Dpressure1,test,2);
-		opstr(1,"\r\n");
-		#endif
-			
-	#else
-		
-		unsigned long tempCntdp=0;
-		
-		Avg_Raw_pressure_cnt1=0;
-		for(i=0;i<RAW_DP_CNT_IND;i++) Avg_Raw_pressure_cnt1 += Raw_pressure_cnt1[i];
-		Avg_Raw_pressure_cnt1 /= RAW_DP_CNT_IND;
-	
-		tempCntdp = ReadDPressure(0);
-	
-		if(tempCntdp > Avg_Raw_pressure_cnt1)
-		{
-			differanceDP = tempCntdp - Avg_Raw_pressure_cnt1;
-		}
-		else
-		{
-			differanceDP = Avg_Raw_pressure_cnt1 - tempCntdp;
-		}
-	
-		if(differanceDP > 100)
-		{
-			for(i=0;i<RAW_DP_CNT_IND;i++)Raw_pressure_cnt1[i] = tempCntdp;
-			Raw_pressure_cnt_ind1=0;
-		}
-		else
-		{
-			Raw_pressure_cnt1[Raw_pressure_cnt_ind1++] = tempCntdp;
-			if(Raw_pressure_cnt_ind1>=RAW_DP_CNT_IND) Raw_pressure_cnt_ind1=0;
-		}
-	
-		if(Avg_Raw_pressure_cnt1 >= 0xFFFF)
-		{
-			b.DP1_NC=1;
-			DP1_Alrm_ON=NO_ALARM;
-			
-			gu8_Dp1AlarmSensingTimer=0;
-			
-			//DP_StartUpTimer=S_STABLE_TIME;
-			Avg_Raw_pressure_cnt1=0xFFFF;
-		}
-		else
-		{
-			b.DP1_NC=0;
-		
-			//Avg_Raw_pressure_cnt1 += DP1_Cal_Count;
-			//Avg_Raw_pressure_cnt1 += DP1_Cal_Count_C;
-		
-			if(Avg_Raw_pressure_cnt1 > ZERO_DP_COUNT)
-			{
-				Avg_Raw_pressure_cnt1 = Avg_Raw_pressure_cnt1 - ZERO_DP_COUNT;
-				Dpressure1 = (float)Avg_Raw_pressure_cnt1 / PASCAL_PER_CNT;
-			}
-			else
-			{
-				Avg_Raw_pressure_cnt1 = ZERO_DP_COUNT - Avg_Raw_pressure_cnt1;
-				Dpressure1 = (float)Avg_Raw_pressure_cnt1 / PASCAL_PER_CNT;
-				Dpressure1 *= (-1.0);
-			}
-			
-			RealDpressure1 = Dpressure1;
-			Dpressure1 -= DP1_Cal_float_Value_F;
-			Dpressure1 -= DP1_Cal_float_Value_C;
-		
-			if(!DP_StartUpTimer)
-			{
-				//Find DP Min/Max
-				if(Dpressure1 > DP1_Max)
-				{
-					DP1_Max = Dpressure1;
-					eeprom_busy_wait();  eeprom_write_block((uint8_t*)&DP1_Max,(uint8_t*)DP1_MAXIMUM,4);
-				}
-			
-				if(Dpressure1 < DP1_Min)
-				{
-					DP1_Min = Dpressure1;
-					eeprom_busy_wait();  eeprom_write_block((uint8_t*)&DP1_Min,(uint8_t*)DP1_MINIMUM,4);
-				}
-							
-				//Check Alarm Limit for DP ------------------------------------------------------------------------
-				if(Dpressure1 > (float)DP1_Upper_Alm_ON/10.0)
-				{
-					if(gu8_Dp1AlarmSensingTimer<=gu8_Dp2AlarmSensingTime)
-					{
-						gu8_Dp1AlarmSensingTimer++;
-					}
-					else
-					{
-						DP1_Alrm_ON=UPPER_ALARM;
-						
-						if(!b.DP1Log)
-						{
-							LastDP1_Alrm_ON=DP1_Alrm_ON;
-							eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP1_ALRM_STAT,LastDP1_Alrm_ON);
-							
-							LogReading(DP1_ALM_OCCURE_LOG,0,0xFFFF);
-							FillRamBuffer(DP1_ALM_OCCURE_LOG,0,0xFFFF);
-							
-							//if(gu16_parameterWord & ENABLE_ALERT) StartBuzzer();
-							
-							b.autoSendResponse = true;
-							b.DP1Log=1;
-						}
-						else
-						{
-							if(LastDP1_Alrm_ON!=DP1_Alrm_ON)
-							{
-								LogReading(DP1_ALM_RESTORE_LOG,0,0xFFFF);
-								FillRamBuffer(DP1_ALM_RESTORE_LOG,0,0xFFFF);
-								
-								LastDP1_Alrm_ON=NO_ALARM;
-								eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP1_ALRM_STAT,LastDP1_Alrm_ON);
-								
-								b.DP1Log=0;
-							}
-						}
-					}
-				}
-				else if(Dpressure1 < (float)DP1_Lower_Alm_ON/10.0)
-				{
-					if(gu8_Dp1AlarmSensingTimer<=gu8_Dp2AlarmSensingTime)
-					{
-						gu8_Dp1AlarmSensingTimer++;
-					}
-					else
-					{
-						DP1_Alrm_ON=LOWER_ALARM;
-						
-						if(!b.DP1Log)
-						{
-							LastDP1_Alrm_ON=DP1_Alrm_ON;
-							eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP1_ALRM_STAT,LastDP1_Alrm_ON);
-							
-							LogReading(DP1_ALM_OCCURE_LOG,0,0xFFFF);
-							FillRamBuffer(DP1_ALM_OCCURE_LOG,0,0xFFFF);
-							
-							//if(gu16_parameterWord & ENABLE_ALERT) StartBuzzer();
-							
-							b.autoSendResponse = true;
-							b.DP1Log=1;
-						}
-						else
-						{
-							if(LastDP1_Alrm_ON!=DP1_Alrm_ON)
-							{
-								LogReading(DP1_ALM_RESTORE_LOG,0,0xFFFF);
-								FillRamBuffer(DP1_ALM_RESTORE_LOG,0,0xFFFF);
-								
-								LastDP1_Alrm_ON=NO_ALARM;
-								eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP1_ALRM_STAT,LastDP1_Alrm_ON);
-								
-								b.DP1Log=0;
-							}
-						}
-					}
-				}
-				else if((Dpressure1 < (float)DP1_Upper_Alm_OFF/10.0) && (Dpressure1 > (float)DP1_Lower_Alm_OFF/10.0))
-				{
-					DP1_Alrm_ON=NO_ALARM;
 					
-					gu8_Dp1AlarmSensingTimer=0;
-						
-					if(b.DP1Log==1)
+						LogReading(DP1_ALM_OCCURE_LOG,0,0xFFFF);
+						FillRamBuffer(DP1_ALM_OCCURE_LOG,0,0xFFFF);
+					
+						//if(gu16_parameterWord & ENABLE_ALERT) StartBuzzer();
+					
+						b.autoSendResponse = true;
+						b.DP1Log=1;
+					}
+					else
 					{
-						LogReading(DP1_ALM_RESTORE_LOG,0,0xFFFF);
-						FillRamBuffer(DP1_ALM_RESTORE_LOG,0,0xFFFF);
+						if(LastDP1_Alrm_ON!=DP1_Alrm_ON)
+						{
+							LogReading(DP1_ALM_RESTORE_LOG,0,0xFFFF);
+							FillRamBuffer(DP1_ALM_RESTORE_LOG,0,0xFFFF);
 						
-						b.DP1Log=0;
+							LastDP1_Alrm_ON=NO_ALARM;
+							eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP1_ALRM_STAT,LastDP1_Alrm_ON);
 						
+							b.DP1Log=0;
+						}
+					}
+				}
+			}
+			else if(Dpressure1 < (float)DP1_Lower_Alm_ON/10.0)
+			{
+				if(gu8_Dp1AlarmSensingTimer<=gu8_Dp2AlarmSensingTime)
+				{
+					gu8_Dp1AlarmSensingTimer++;
+				}
+				else
+				{
+					DP1_Alrm_ON=LOWER_ALARM;
+					
+					if(!b.DP1Log)
+					{
 						LastDP1_Alrm_ON=DP1_Alrm_ON;
 						eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP1_ALRM_STAT,LastDP1_Alrm_ON);
+						
+						LogReading(DP1_ALM_OCCURE_LOG,0,0xFFFF);
+						FillRamBuffer(DP1_ALM_OCCURE_LOG,0,0xFFFF);
+						
+						//if(gu16_parameterWord & ENABLE_ALERT) StartBuzzer();
+						
+						b.autoSendResponse = true;
+						b.DP1Log=1;
+					}
+					else
+					{
+						if(LastDP1_Alrm_ON!=DP1_Alrm_ON)
+						{
+							LogReading(DP1_ALM_RESTORE_LOG,0,0xFFFF);
+							FillRamBuffer(DP1_ALM_RESTORE_LOG,0,0xFFFF);
+							
+							LastDP1_Alrm_ON=NO_ALARM;
+							eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP1_ALRM_STAT,LastDP1_Alrm_ON);
+							
+							b.DP1Log=0;
+						}
 					}
 				}
 			}
+			else if((Dpressure1 < (float)DP1_Upper_Alm_OFF/10.0) && (Dpressure1 > (float)DP1_Lower_Alm_OFF/10.0))
+			{
+				DP1_Alrm_ON=NO_ALARM;
+				
+				gu8_Dp1AlarmSensingTimer=0;
+				
+				if(b.DP1Log==1)
+				{
+					LogReading(DP1_ALM_RESTORE_LOG,0,0xFFFF);
+					FillRamBuffer(DP1_ALM_RESTORE_LOG,0,0xFFFF);
+					
+					b.DP1Log=0;
+					
+					LastDP1_Alrm_ON=DP1_Alrm_ON;
+					eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP1_ALRM_STAT,LastDP1_Alrm_ON);
+				}
+			}
 		}
-	#endif
+	}
+		
+	#ifdef DEBUG_DP1				
+	opstr(1," SM9541 Reading:  ");
+	opstr(1,"DP1 Count: ");
+	print_float(1,differanceDP,test,0);
+	opstr(1,"    ");
+	opstr(1,"DP1 Value: ");
+	print_float(1,Dpressure1,test,2);
+	opstr(1,"\r\n");
+	#endif	
 }
 
 void ReadDiffPressure2(void)
 {
 	unsigned short differanceDP=0;
-
+	uint8_t DpError=0;
+	
 	Dpressure2=0.0;
 	
-	#ifdef USE_SM9541_SENSOR
-	
-		uint8_t DpError=0;
-		
-		//Start Command Mode ----------------------------------
-		I2C_DP2_Start();						// Start condition
-		Write_Byte_I2C_DP2(0x51); 				// Write device address
-	
-		SDA_DP2_DIR_IN;
-	
-		differanceDP=0;
-		differanceDP = Read_Byte_I2C_DP2(ACK);
-		differanceDP<<=8;
-		differanceDP |= Read_Byte_I2C_DP2(NO_ACK);
-	
-		SDA_DP2_DIR_OUT;
-	
-		I2C_DP2_Stop();              // Send a STOP condition on the TWI bus.
+	//Start Command Mode ----------------------------------
+	I2C_DP2_Start();						// Start condition
+	Write_Byte_I2C_DP2(0x51); 				// Write device address
 
-		if((differanceDP & 0xC000) == 0xC000) DpError = 1;
+	SDA_DP2_DIR_IN;
+
+	differanceDP=0;
+	differanceDP = Read_Byte_I2C_DP2(ACK);
+	differanceDP<<=8;
+	differanceDP |= Read_Byte_I2C_DP2(NO_ACK);
+
+	SDA_DP2_DIR_OUT;
+
+	I2C_DP2_Stop();              // Send a STOP condition on the TWI bus.
+
+	if((differanceDP & 0xC000) == 0xC000) DpError = 1;
+	
+	differanceDP &= 0x3FFF;
+	
+	if(DpError)
+	{
+		b.DP2_NC=1;
+		DP2_Alrm_ON=NO_ALARM;
 		
-		differanceDP &= 0x3FFF;
+		gu8_Dp2AlarmSensingTimer=0;
 		
-		if(DpError)
+		#ifdef DEBUG_DP2
+		opstr(1,"DP2 ERROR  ");
+		#endif
+	}
+	else
+	{
+		b.DP2_NC=0;
+
+		RealDpressure2 = (float)differanceDP-1638;			
+		RealDpressure2 *= 0.0762951094834821;//0.1496910048065919;//0762951094834821 
+		RealDpressure2 -= 500;//981; pressure range  
+		
+		float f32_temp=0;
+		f32_temp = RealDpressure2;
+		f32_temp -= DP2_Cal_float_Value_F;
+		f32_temp -= DP2_Cal_float_Value_C;
+		
+		if((f32_temp > 200) && (f32_temp <= 300)) f32_temp -= 1;
+		else if((f32_temp > 300) && (f32_temp <= 400)) f32_temp -= 2;
+		else if((f32_temp > 400) && (f32_temp <= 500)) f32_temp -= 3;
+		else if((f32_temp > 500) && (f32_temp <= 600)) f32_temp -= 4;
+		else if((f32_temp > 600) && (f32_temp <= 700)) f32_temp -= 5;
+		else if((f32_temp > 700) && (f32_temp <= 800)) f32_temp -= 6;
+		else if(f32_temp > 800) f32_temp -= 7;
+		
+		Dpressure2 = f32_temp;
+		
+		Dpressure2 = Kalman_Update(&Kalman[1], Dpressure2);
+		
+		//if(!DP_CHANGE_SENSE) //ENABLE for switch
 		{
-			b.DP2_NC=1;
-			DP2_Alrm_ON=NO_ALARM;
-			
-			gu8_Dp2AlarmSensingTimer=0;
-			
-			//DP_StartUpTimer=S_STABLE_TIME;
-			Avg_Raw_pressure_cnt2=0x3FFF;
-			
-			#ifdef DEBUG_DP2
-			opstr(1,"DP2 ERROR  ");
-			#endif
-		}
-		else
-		{
-			b.DP2_NC=0;
-
-			Raw_pressure_cnt2[Raw_pressure_cnt_ind2++] = differanceDP;
-			if(Raw_pressure_cnt_ind2>=RAW_DP_CNT_IND) Raw_pressure_cnt_ind2=0;
-			
-			signed long lu32_temp=0;
-			
-			lu32_temp = 0;
-			for(i=0;i<RAW_DP_CNT_IND;i++) lu32_temp += Raw_pressure_cnt2[i];
-			lu32_temp /= RAW_DP_CNT_IND;       
-
-			if((Avg_Raw_pressure_cnt2<=(lu32_temp+5)) && (Avg_Raw_pressure_cnt2>=(lu32_temp-5)))
+			if(!gu8_dp_sw_enb)
 			{
-				Avg_Raw_pressure_cnt2=(lu32_temp+Avg_Raw_pressure_cnt2+Avg_Raw_pressure_cnt2)/3;
+				if(Dpressure2>-1.0) Dpressure2 += f32_dp_sw_factor[1];  //MINUS LIMIT 2
+				else Dpressure2 -= f32_dp_sw_factor[1];
 			}
 			else
 			{
-				Avg_Raw_pressure_cnt2=lu32_temp;
-			}
-	
-			Avg_Raw_pressure_cnt2 -= 1638;
-
-			RealDpressure2 = (float)Avg_Raw_pressure_cnt2;			
-			RealDpressure2 *= 0.0762951094834821;//0.1496910048065919;//0762951094834821 original  by changing it will  change DP value 0762951094834821
-			RealDpressure2 -= 500;//981; pressure range  
-			
-			float f32_temp=0;
-			f32_temp = RealDpressure2;
-			f32_temp -= DP2_Cal_float_Value_F;
-			f32_temp -= DP2_Cal_float_Value_C;
-			
-			lu32_temp = f32_temp;
-			f32_temp = lu32_temp;
-			
-			if((f32_temp > 200) && (f32_temp <= 300)) f32_temp -= 1;
-			else if((f32_temp > 300) && (f32_temp <= 400)) f32_temp -= 2;
-			else if((f32_temp > 400) && (f32_temp <= 500)) f32_temp -= 3;
-			else if((f32_temp > 500) && (f32_temp <= 600)) f32_temp -= 4;
-			else if((f32_temp > 600) && (f32_temp <= 700)) f32_temp -= 5;
-			else if((f32_temp > 700) && (f32_temp <= 800)) f32_temp -= 6;
-			else if(f32_temp > 800) f32_temp -= 7;
-			
-			if((f32_temp<1.0) && (f32_temp>-1.0))
-			{
-				f32_temp = 0;
-			}
-			
-			Dpressure2 = f32_temp;
-			
-			Dpressure2 = Kalman_Update(&Kalman[1], Dpressure2);
-			
-			//if(!DP_CHANGE_SENSE) //ENABLE for switch
-			{
-				if(!gu8_dp_sw_enb)
+				if((Dpressure2>0.03) || (Dpressure2<-0.03))
 				{
-					if(Dpressure2>-1.0) Dpressure2 += f32_dp_sw_factor[1];  //MINUS LIMIT 2
-					else Dpressure2 -= f32_dp_sw_factor[1];
+					if(Dpressure2>0.03) Dpressure2 += f32_dp_sw_factor[1];
+					if(Dpressure2<-0.03) Dpressure2 -= f32_dp_sw_factor[1];
+				}
+			}
+		}
+
+		//---------------------------------------------------------------------------
+		/*Raw_pressure_cnt2[Raw_pressure_cnt_ind2++] = (Dpressure2 * 10);
+		if(Raw_pressure_cnt_ind2>=RAW_DP_CNT_IND) Raw_pressure_cnt_ind2=0;
+		
+		signed long lu32_temp=0;
+		
+		lu32_temp = 0;
+		for(i=0;i<RAW_DP_CNT_IND;i++) lu32_temp += Raw_pressure_cnt2[i];
+		lu32_temp /= RAW_DP_CNT_IND;       
+		
+		Dpressure2 = (float)lu32_temp/10;
+		*/
+		
+		if((Dpressure2<1.0) && (Dpressure2>-1.0))
+		{
+			Dpressure2 = 0;
+		}
+		
+		if(Dpressure2 > f32_dp_limit[1]) 
+		{
+			Dpressure2 = f32_dp_limit[1];
+			b.DP2_limit = 1;
+		}
+		else if(Dpressure2 < -f32_dp_limit[1]) 
+		{
+			Dpressure2 = -f32_dp_limit[1];
+			b.DP2_limit = 2;
+		}
+		else
+		{
+			b.DP2_limit = 0;
+		}
+		
+		if(abs(LastDpressure2-Dpressure2)>0.1)
+		{
+			LastDpressure2 = Dpressure2;
+		}
+		else
+		{
+			Dpressure2 = LastDpressure2;
+		}
+		
+		//---------------------------------------------------------------------------
+		
+		if(!DP_StartUpTimer)
+		{
+			//Find DP Min/Max
+			if(Dpressure2 > DP2_Max)
+			{
+				DP2_Max = Dpressure2;
+				eeprom_busy_wait();  eeprom_write_block((uint8_t*)&DP2_Max,(uint8_t*)DP2_MAXIMUM,4);
+			}
+		
+			if(Dpressure2 < DP2_Min)
+			{
+				DP2_Min = Dpressure2;
+				eeprom_busy_wait();  eeprom_write_block((uint8_t*)&DP2_Min,(uint8_t*)DP2_MINIMUM,4);
+			}
+			
+			//Check Alarm Limit for DP ------------------------------------------------------------------------
+			if(Dpressure2 > (float)DP2_Upper_Alm_ON/10.0)
+			{
+				if(gu8_Dp2AlarmSensingTimer<=gu8_Dp2AlarmSensingTime)
+				{
+					gu8_Dp2AlarmSensingTimer++;
 				}
 				else
 				{
-					if((Dpressure2>0.03) || (Dpressure2<-0.03))
+					DP2_Alrm_ON=UPPER_ALARM;
+					
+					if(!b.DP2Log)
 					{
-						if(Dpressure2>0.03) Dpressure2 += f32_dp_sw_factor[1];
-						if(Dpressure2<-0.03) Dpressure2 -= f32_dp_sw_factor[1];
+						LastDP2_Alrm_ON=DP2_Alrm_ON;
+						eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP2_ALRM_STAT,LastDP2_Alrm_ON);
+						
+						LogReading(DP2_ALM_OCCURE_LOG,0,0xFFFF);
+						FillRamBuffer(DP2_ALM_OCCURE_LOG,0,0xFFFF);
+						
+						//if(gu16_parameterWord & ENABLE_ALERT) StartBuzzer();
+						
+						b.autoSendResponse = true;
+						b.DP2Log=1;
+					}
+					else
+					{
+						if(LastDP2_Alrm_ON!=DP2_Alrm_ON)
+						{
+							LogReading(DP2_ALM_RESTORE_LOG,0,0xFFFF);
+							FillRamBuffer(DP2_ALM_RESTORE_LOG,0,0xFFFF);
+							
+							LastDP2_Alrm_ON=NO_ALARM;
+							eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP2_ALRM_STAT,LastDP2_Alrm_ON);
+							
+							b.DP2Log=0;
+						}
 					}
 				}
 			}
-			
-			if(Dpressure2 > f32_dp_limit[1]) Dpressure2 = f32_dp_limit[1];
-			if(Dpressure2 < -f32_dp_limit[1]) Dpressure2 = -f32_dp_limit[1];
-			
-			if(!DP_StartUpTimer)
+			else if(Dpressure2 < (float)DP2_Lower_Alm_ON/10.0)
 			{
-				//Find DP Min/Max
-				if(Dpressure2 > DP2_Max)
+				if(gu8_Dp2AlarmSensingTimer<=gu8_Dp2AlarmSensingTime)
 				{
-					DP2_Max = Dpressure2;
-					eeprom_busy_wait();  eeprom_write_block((uint8_t*)&DP2_Max,(uint8_t*)DP2_MAXIMUM,4);
+					gu8_Dp2AlarmSensingTimer++;
 				}
-			
-				if(Dpressure2 < DP2_Min)
+				else
 				{
-					DP2_Min = Dpressure2;
-					eeprom_busy_wait();  eeprom_write_block((uint8_t*)&DP2_Min,(uint8_t*)DP2_MINIMUM,4);
+					DP2_Alrm_ON=LOWER_ALARM;
+					
+					if(!b.DP2Log)
+					{
+						LastDP2_Alrm_ON=DP2_Alrm_ON;
+						eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP2_ALRM_STAT,LastDP2_Alrm_ON);
+						
+						LogReading(DP2_ALM_OCCURE_LOG,0,0xFFFF);
+						FillRamBuffer(DP2_ALM_OCCURE_LOG,0,0xFFFF);
+						
+						//if(gu16_parameterWord & ENABLE_ALERT) StartBuzzer();
+						
+						b.autoSendResponse = true;
+						b.DP2Log=1;
+					}
+					else
+					{
+						if(LastDP2_Alrm_ON!=DP2_Alrm_ON)
+						{
+							LogReading(DP2_ALM_RESTORE_LOG,0,0xFFFF);
+							FillRamBuffer(DP2_ALM_RESTORE_LOG,0,0xFFFF);
+							
+							LastDP2_Alrm_ON=NO_ALARM;
+							eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP2_ALRM_STAT,LastDP2_Alrm_ON);
+							
+							b.DP2Log=0;
+						}
+					}
 				}
+			}
+			else if((Dpressure2 < (float)DP2_Upper_Alm_OFF/10.0) && (Dpressure2 > (float)DP2_Lower_Alm_OFF/10.0))
+			{
+				DP2_Alrm_ON=NO_ALARM;
 				
-				//Check Alarm Limit for DP ------------------------------------------------------------------------
-				if(Dpressure2 > (float)DP2_Upper_Alm_ON/10.0)
+				gu8_Dp2AlarmSensingTimer=0;
+				
+				if(b.DP2Log==1)
 				{
-					if(gu8_Dp2AlarmSensingTimer<=gu8_Dp2AlarmSensingTime)
-					{
-						gu8_Dp2AlarmSensingTimer++;
-					}
-					else
-					{
-						DP2_Alrm_ON=UPPER_ALARM;
-						
-						if(!b.DP2Log)
-						{
-							LastDP2_Alrm_ON=DP2_Alrm_ON;
-							eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP2_ALRM_STAT,LastDP2_Alrm_ON);
-							
-							LogReading(DP2_ALM_OCCURE_LOG,0,0xFFFF);
-							FillRamBuffer(DP2_ALM_OCCURE_LOG,0,0xFFFF);
-							
-							//if(gu16_parameterWord & ENABLE_ALERT) StartBuzzer();
-							
-							b.autoSendResponse = true;
-							b.DP2Log=1;
-						}
-						else
-						{
-							if(LastDP2_Alrm_ON!=DP2_Alrm_ON)
-							{
-								LogReading(DP2_ALM_RESTORE_LOG,0,0xFFFF);
-								FillRamBuffer(DP2_ALM_RESTORE_LOG,0,0xFFFF);
-								
-								LastDP2_Alrm_ON=NO_ALARM;
-								eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP2_ALRM_STAT,LastDP2_Alrm_ON);
-								
-								b.DP2Log=0;
-							}
-						}
-					}
-				}
-				else if(Dpressure2 < (float)DP2_Lower_Alm_ON/10.0)
-				{
-					if(gu8_Dp2AlarmSensingTimer<=gu8_Dp2AlarmSensingTime)
-					{
-						gu8_Dp2AlarmSensingTimer++;
-					}
-					else
-					{
-						DP2_Alrm_ON=LOWER_ALARM;
-						
-						if(!b.DP2Log)
-						{
-							LastDP2_Alrm_ON=DP2_Alrm_ON;
-							eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP2_ALRM_STAT,LastDP2_Alrm_ON);
-							
-							LogReading(DP2_ALM_OCCURE_LOG,0,0xFFFF);
-							FillRamBuffer(DP2_ALM_OCCURE_LOG,0,0xFFFF);
-							
-							//if(gu16_parameterWord & ENABLE_ALERT) StartBuzzer();
-							
-							b.autoSendResponse = true;
-							b.DP2Log=1;
-						}
-						else
-						{
-							if(LastDP2_Alrm_ON!=DP2_Alrm_ON)
-							{
-								LogReading(DP2_ALM_RESTORE_LOG,0,0xFFFF);
-								FillRamBuffer(DP2_ALM_RESTORE_LOG,0,0xFFFF);
-								
-								LastDP2_Alrm_ON=NO_ALARM;
-								eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP2_ALRM_STAT,LastDP2_Alrm_ON);
-								
-								b.DP2Log=0;
-							}
-						}
-					}
-				}
-				else if((Dpressure2 < (float)DP2_Upper_Alm_OFF/10.0) && (Dpressure2 > (float)DP2_Lower_Alm_OFF/10.0))
-				{
-					DP2_Alrm_ON=NO_ALARM;
+					LogReading(DP2_ALM_RESTORE_LOG,0,0xFFFF);
+					FillRamBuffer(DP2_ALM_RESTORE_LOG,0,0xFFFF);
 					
-					gu8_Dp2AlarmSensingTimer=0;
+					b.DP2Log=0;
 					
-					if(b.DP2Log==1)
-					{
-						LogReading(DP2_ALM_RESTORE_LOG,0,0xFFFF);
-						FillRamBuffer(DP2_ALM_RESTORE_LOG,0,0xFFFF);
-						
-						b.DP2Log=0;
-						
-						LastDP2_Alrm_ON=DP2_Alrm_ON;
-						eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP2_ALRM_STAT,LastDP2_Alrm_ON);
-					}
+					LastDP2_Alrm_ON=DP2_Alrm_ON;
+					eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP2_ALRM_STAT,LastDP2_Alrm_ON);
 				}
 			}
 		}
-	
-		#ifdef DEBUG_DP2
-		opstr(1," SM9541 Reading:  ");
-		opstr(1,"DP2 Count: ");
-		print_float(1,differanceDP,test,0);
-		opstr(1,"    ");
-		//opstr(0,"Temp Count: ");
-		//print_float(0,tempDp,test,0);
-		//opstr(0,"    ");
-		opstr(1,"DP2 Value: ");
-		print_float(1,Dpressure2,test,2);
-		opstr(1,"\r\n\r\n\r\n");
-		#endif
-	
-	#else
-	
-		unsigned long tempCntdp=0;
-		
-		Avg_Raw_pressure_cnt2=0;
-		for(i=0;i<RAW_DP_CNT_IND;i++) Avg_Raw_pressure_cnt2 += Raw_pressure_cnt2[i];
-		Avg_Raw_pressure_cnt2 /= RAW_DP_CNT_IND;
-	
-		tempCntdp = ReadDPressure(0);
-	
-		if(tempCntdp > Avg_Raw_pressure_cnt2)
-		{
-			differanceDP = tempCntdp - Avg_Raw_pressure_cnt2;
-		}
-		else
-		{
-			differanceDP = Avg_Raw_pressure_cnt2 - tempCntdp;
-		}
-	
-		if(differanceDP > 100)
-		{
-			for(i=0;i<RAW_DP_CNT_IND;i++)Raw_pressure_cnt2[i] = tempCntdp;
-			Raw_pressure_cnt_ind2=0;
-		}
-		else
-		{
-			Raw_pressure_cnt2[Raw_pressure_cnt_ind2++] = tempCntdp;
-			if(Raw_pressure_cnt_ind2>=RAW_DP_CNT_IND) Raw_pressure_cnt_ind2=0;
-		}
-	
-		if(Avg_Raw_pressure_cnt2 >= 0xFFFF)
-		{
-			b.DP2_NC=1;
-			DP2_Alrm_ON=NO_ALARM;
-			
-			gu8_Dp2AlarmSensingTimer=0;
-			
-			//DP_StartUpTimer=S_STABLE_TIME;
-			Avg_Raw_pressure_cnt2=0xFFFF;
-		}
-		else
-		{
-			b.DP2_NC=0;
-		
-			//Avg_Raw_pressure_cnt2 += DP2_Cal_Count;
-			//Avg_Raw_pressure_cnt2 += DP2_Cal_Count_C;
-		
-			if(Avg_Raw_pressure_cnt2 > ZERO_DP_COUNT)
-			{
-				Avg_Raw_pressure_cnt2 = Avg_Raw_pressure_cnt2 - ZERO_DP_COUNT;
-				Dpressure2 = (float)Avg_Raw_pressure_cnt2 / PASCAL_PER_CNT;
-			}
-			else
-			{
-				Avg_Raw_pressure_cnt2 = ZERO_DP_COUNT - Avg_Raw_pressure_cnt2;
-				Dpressure2 = (float)Avg_Raw_pressure_cnt2 / PASCAL_PER_CNT;
-				Dpressure2 *= (-1.0);
-			}
-		
-			RealDpressure2 = Dpressure2;
-			Dpressure2 -= DP2_Cal_float_Value_F;
-			Dpressure2 -= DP2_Cal_float_Value_C;
-			
-			if(!DP_StartUpTimer)
-			{
-				//Find DP Min/Max
-				if(Dpressure2 > DP2_Max)
-				{
-					DP2_Max = Dpressure2;
-					eeprom_busy_wait();  eeprom_write_block((uint8_t*)&DP2_Max,(uint8_t*)DP2_MAXIMUM,4);
-				}
-			
-				if(Dpressure2 < DP2_Min)
-				{
-					DP2_Min = Dpressure2;
-					eeprom_busy_wait();  eeprom_write_block((uint8_t*)&DP2_Min,(uint8_t*)DP2_MINIMUM,4);
-				}
-							
-				//Check Alarm Limit for DP ------------------------------------------------------------------------
-				if(Dpressure2 > (float)DP2_Upper_Alm_ON/10.0)
-				{
-					if(gu8_Dp2AlarmSensingTimer<=gu8_Dp2AlarmSensingTime)
-					{
-						gu8_Dp2AlarmSensingTimer++;
-					}
-					else
-					{
-						DP2_Alrm_ON=UPPER_ALARM;
-					
-						if(!b.DP2Log)
-						{
-							LastDP2_Alrm_ON=DP2_Alrm_ON;
-							eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP2_ALRM_STAT,LastDP2_Alrm_ON);
-						
-							LogReading(DP2_ALM_OCCURE_LOG,0,0xFFFF);
-							FillRamBuffer(DP2_ALM_OCCURE_LOG,0,0xFFFF);
-						
-							//if(gu16_parameterWord & ENABLE_ALERT) StartBuzzer();
-						
-							b.autoSendResponse = true;
-							b.DP2Log=1;
-						}
-						else
-						{
-							if(LastDP2_Alrm_ON!=DP2_Alrm_ON)
-							{
-								LogReading(DP2_ALM_RESTORE_LOG,0,0xFFFF);
-								FillRamBuffer(DP2_ALM_RESTORE_LOG,0,0xFFFF);
-							
-								LastDP2_Alrm_ON=NO_ALARM;
-								eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP2_ALRM_STAT,LastDP2_Alrm_ON);
-							
-								b.DP2Log=0;
-							}
-						}
-					}
-				}
-				else if(Dpressure2 < (float)DP2_Lower_Alm_ON/10.0)
-				{
-					if(gu8_Dp2AlarmSensingTimer<=gu8_Dp2AlarmSensingTime)
-					{
-						gu8_Dp2AlarmSensingTimer++;
-					}
-					else
-					{
-						DP2_Alrm_ON=LOWER_ALARM;
-					
-						if(!b.DP2Log)
-						{
-							LastDP2_Alrm_ON=DP2_Alrm_ON;
-							eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP2_ALRM_STAT,LastDP2_Alrm_ON);
-						
-							LogReading(DP2_ALM_OCCURE_LOG,0,0xFFFF);
-							FillRamBuffer(DP2_ALM_OCCURE_LOG,0,0xFFFF);
-						
-							//if(gu16_parameterWord & ENABLE_ALERT) StartBuzzer();
-						
-							b.autoSendResponse = true;
-							b.DP2Log=1;
-						}
-						else
-						{
-							if(LastDP2_Alrm_ON!=DP2_Alrm_ON)
-							{
-								LogReading(DP2_ALM_RESTORE_LOG,0,0xFFFF);
-								FillRamBuffer(DP2_ALM_RESTORE_LOG,0,0xFFFF);
-							
-								LastDP2_Alrm_ON=NO_ALARM;
-								eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP2_ALRM_STAT,LastDP2_Alrm_ON);
-							
-								b.DP2Log=0;
-							}
-						}
-					}
-				}
-				else if((Dpressure2 < (float)DP2_Upper_Alm_OFF/10.0) && (Dpressure2 > (float)DP2_Lower_Alm_OFF/10.0))
-				{
-					DP2_Alrm_ON=NO_ALARM;
-					
-					gu8_Dp2AlarmSensingTimer=0;
-					
-					if(b.DP2Log==1)
-					{
-						LogReading(DP2_ALM_RESTORE_LOG,0,0xFFFF);
-						FillRamBuffer(DP2_ALM_RESTORE_LOG,0,0xFFFF);
-						
-						b.DP2Log=0;
-						
-						LastDP2_Alrm_ON=DP2_Alrm_ON;
-						eeprom_busy_wait();  eeprom_write_byte ((uint8_t*)LAST_DP2_ALRM_STAT,LastDP2_Alrm_ON);
-					}
-				}
-			}
-		}
+	}
+
+	#ifdef DEBUG_DP2
+	opstr(1," SM9541 Reading:  ");
+	opstr(1,"DP2 Count: ");
+	print_float(1,differanceDP,test,0);
+	opstr(1,"    ");
+	//opstr(0,"Temp Count: ");
+	//print_float(0,tempDp,test,0);
+	//opstr(0,"    ");
+	opstr(1,"DP2 Value: ");
+	print_float(1,Dpressure2,test,2);
+	opstr(1,"\r\n\r\n\r\n");
 	#endif
 }
 
@@ -8382,7 +8061,7 @@ void Init_InternalRTC(void)
 {
 	while(RTC.STATUS & RTC_SYNCBUSY_bm);
 	
-	RTC.PER = 511;
+	RTC.PER = 51;//102;//256;//511;
 	RTC.CNT = 0;
 	RTC.COMP = 0;
 	RTC.CTRL = RTC_PRESCALER_DIV1_gc;
@@ -8391,44 +8070,48 @@ void Init_InternalRTC(void)
 
 ISR(RTC_OVF_vect)
 {
-	static uint8_t mcnt=0;
+	static uint8_t mcnt=0,mcnt1=0,mcnt2=0;
 	
-	b.mec500_blink_flag ^= 1;
-	b.led_toggle^=1;
-	b.AlarmLED=1;
+	b.msec50_flag = 1;
+	
+	mcnt2++;
+	if(mcnt2>=5)
+	{
+		mcnt2=0;
+		b.msec250_flag = 1;
+	}
+	
+	mcnt1++;
+	if(mcnt1>=10)
+	{
+		mcnt1=0;
+		
+		b.mec500_blink_flag ^= 1;
+		b.led_toggle ^= 1;
+		b.AlarmLED = 1;
+		
+		b.msec500_flag = 1;
+		
+		if(RxTimeout)
+		{
+			RxTimeout--;
+			if(!RxTimeout)
+			{
+				b.msgRcvOK=0;
+				rxMode=0;
+				RxInd=0;
+			}
+		}
+	}
+	
 	//---------------------------------------------
 	mcnt++;
-	if(mcnt>=2)
+	if(mcnt>=20)
 	{
 		mcnt=0;
 		b.sec_flag=1;
-		
-		//b.blink ^= 1;
-		
-		/*if(FlashlogTimer)
-		{
-			FlashlogTimer--;
-			if(!FlashlogTimer)
-			{
-				b.logDataflag=1;
-				FlashlogTimer=60;
-			}
-		}*/
 	}
-	
-	b.msec_flag=1;
 	//---------------------------------------------
-	
-	if(RxTimeout)
-	{
-		RxTimeout--;
-		if(!RxTimeout)
-		{
-			b.msgRcvOK=0;
-			rxMode=0;
-			RxInd=0;
-		}
-	}
 }
 
 //**********************************************************************************************************
@@ -8874,13 +8557,13 @@ void SecondTick(void)
 		}
 	}
 
-	acnt1++;
+	/*acnt1++;
 	if(acnt1>=gu8_TM_RH_ScanTime)
 	{
 		acnt1=0;
 			
 		Read_SHT25();
-	}
+	}*/
 	
 	#ifdef ENABLE_BATTERY_DISPLAY
 	static uint8_t acnt2=0;
@@ -8944,42 +8627,6 @@ void SecondTick(void)
 	}
 				
 	#endif
-	
-	
-	//Read Differential Pressure -----------------------------------------
-	if(gu16_parameterWord & ENABLE_DP1)
-	{
-		ReadDiffPressure1();
-	}
-	else
-	{
-		b.DP1_NC = 0;
-		
-		Dpressure1=0.0;
-
-		DP1_Max=0.0;
-		DP1_Min=0.0;
-
-		DP1_Alrm_ON=NO_ALARM;
-		
-		DP_StartUpTimer=0;
-	}
-	
-	//if(gu16_parameterWord & ENABLE_DP2)
-	//{
-		//ReadDiffPressure2();
-	//}
-	//else
-	//{
-		//Dpressure2=0.0;
-//
-		//DP2_Max=0.0;
-		//DP2_Min=0.0;
-//
-		//DP2_Alrm_ON=NO_ALARM;
-		//
-		//DP_StartUpTimer=0;
-	//}
 }
 
 //**********************************************************************************************************
@@ -9014,7 +8661,7 @@ void InitLEDController(void)
 	data[3] = r;
 	
 	data[5] = 19;
-	data[6] = 1;
+	data[6] = 2;
 						
 	disp_value();
 	
@@ -9102,7 +8749,7 @@ void InitLEDController(void)
 	}
 	
 	//-------------------------------------------------------------------
-	for(i=0;i<NO_DIGIT;i++) data[i]=BLANK;
+	/*for(i=0;i<NO_DIGIT;i++) data[i]=BLANK;
 	data[2] = 9;
 	data[3] = r;
 	convert_char(gu8_DeviceInGroup,&data[4],3);
@@ -9117,7 +8764,7 @@ void InitLEDController(void)
 	else
 	{
 		_delay_ms(2000);
-	}
+	}*/
 	
 	wdt_reset();
 }
@@ -9783,32 +9430,47 @@ void conv_value(void)
 							//----------------------------------------------------
 							tempfloat = Dpressure2;
 						
-							if(tempfloat<0.0)
+							if(!b.DP2_limit)
 							{
-								tempfloat *= (-1.0);
-								
-								if(DP2_Alrm_ON) 
+								if(tempfloat<0.0)
 								{
-									lcd.Sym_DP_MIN_ALM = 1;
+									tempfloat *= (-1.0);
+									
+									if(DP2_Alrm_ON) 
+									{
+										lcd.Sym_DP_MIN_ALM = 1;
+									}
+									else
+									{
+										lcd.Sym_DP_MIN = 1;
+									}
+								}
+								//----------------------------------------------------
+								if(tempfloat < 10.0)
+								{
+									convert_float(tempfloat,&data[5],1);
+								}
+								else if(tempfloat < 100.0)
+								{
+									convert_float(tempfloat,&data[4],1);
 								}
 								else
 								{
-									lcd.Sym_DP_MIN = 1;
+									convert_float(tempfloat,&data[4],0);
 								}
 							}
-							//----------------------------------------------------
-							if(tempfloat < 10.0)
+							else if(b.DP2_limit==1)
 							{
-								convert_float(tempfloat,&data[5],1);
+								data[5]=H;
+								data[6]=I;
 							}
-							else if(tempfloat < 100.0)
+							else if(b.DP2_limit==2)
 							{
-								convert_float(tempfloat,&data[4],1);
+								data[5]=L;
+								data[6]=0;
 							}
-							else
-							{
-								convert_float(tempfloat,&data[4],0);
-							}
+								
+							
 						
 							//----------------------------------------------------
 						}
@@ -12172,8 +11834,8 @@ void boot_data(void)
 			f32_dp_sw_factor[i]=0.0;
 			eeprom_busy_wait();  eeprom_write_word((unsigned int*)(DP_SW_FACT_ADDR+(i*2)),su16_dp_sw_factor[i]);
 			
-			u16_dp_limit[i]=10000;
-			f32_dp_limit[i]=1000.0;
+			u16_dp_limit[i]=2500;
+			f32_dp_limit[i]=250.0;
 			eeprom_busy_wait();  eeprom_write_word((unsigned int*)(DP_LIMIT_ADDR+(i*2)),u16_dp_limit[i]);
 		}
 
@@ -12763,9 +12425,9 @@ void boot_data(void)
 			f32_dp_sw_factor[i]=(float)su16_dp_sw_factor[i]/100.0;
 			
 			u16_dp_limit[i]  = eeprom_read_word ((unsigned int*)(DP_LIMIT_ADDR+(i*2)));
-			if((u16_dp_limit[i]<500) || (u16_dp_limit[i]>10000))
+			if((u16_dp_limit[i]<500) || (u16_dp_limit[i]>9990))
 			{
-				u16_dp_limit[i]=10000;
+				u16_dp_limit[i]=2500;
 				eeprom_busy_wait();  eeprom_write_word((unsigned int*)(DP_LIMIT_ADDR+(i*2)),u16_dp_limit[i]);
 			}
 			f32_dp_limit[i]=(float)u16_dp_limit[i]/10.0;
